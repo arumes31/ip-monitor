@@ -23,10 +23,14 @@
         .add-form input[type="text"] {width:40%; margin-right:10px;}
         .search-form {margin-bottom:20px;}
         .search-form input {width:300px; padding:12px; font-size:16px; border-radius:6px; border:1px solid #ccc;}
-        .pause-btn, .notif-btn, .quiet-btn {background:#ffc107; color:#000; margin-left:10px; padding:5px 10px; border-radius:4px; cursor:pointer; font-size:14px;}
-        .pause-btn:hover, .notif-btn:hover, .quiet-btn:hover {background:#e0a800;}
-        .notif-btn.disabled, .quiet-btn.disabled {background:#6c757d; color:#fff;}
+        .pause-btn, .config-btn {background:#ffc107; color:#000; margin-left:10px; padding:5px 10px; border-radius:4px; cursor:pointer; font-size:14px;}
+        .pause-btn:hover, .config-btn:hover {background:#e0a800;}
         a {margin-left:10px;}
+        #configModal {display:none; position:fixed; z-index:1000; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5);}
+        #configModal > div {background:white; margin:10% auto; padding:20px; width:300px; border-radius:8px;}
+        #configModal label {display:block; margin:10px 0;}
+        #configModal input[type="checkbox"] {width:auto; margin-right:5px;}
+        #configModal button {margin:5px; padding:8px 16px;}
     </style>
 </head>
 <body>
@@ -54,8 +58,7 @@
                     <option value="168">1w</option>
                 </select>
                 <button class="pause-btn">⏸️ Pause</button>
-                <button class="notif-btn">🔔 Notifs</button>
-                <button class="quiet-btn">🌙 No Quiet</button>
+                <button class="config-btn" onclick="openConfig(this.parentNode.parentNode); event.stopPropagation();">⚙️ Config</button>
             </h2>
             {% if ip.description %}
             <div class="description">{{ip.description}}</div>
@@ -70,8 +73,19 @@
     </div>
 </div>
 
+<div id="configModal">
+    <div>
+        <h3>Configure <span id="modalIP"></span></h3>
+        <label><input type="checkbox" id="modalNotif"> Enable Notifications</label>
+        <label><input type="checkbox" id="modalQuiet"> Enable Quiet Hours</label>
+        <button onclick="saveConfig()">Save</button>
+        <button onclick="closeModal()">Close</button>
+    </div>
+</div>
+
 <script>
 const charts = {};
+let currentModalIpDiv = null;
 function toggleGraph(ipDiv) {
     const extended = ipDiv.dataset.extended === 'true';
     ipDiv.dataset.extended = (!extended).toString();
@@ -84,7 +98,7 @@ function toggleGraph(ipDiv) {
             charts[id] = new Chart(canvas, {
                 data:{labels:[], datasets:[
                     {type:'line', label:'Latency', data:[], borderColor:'limegreen', backgroundColor:'rgba(0,255,0,0.1)', fill:true, tension:0.3, yAxisID:'y'},
-                    {type:'bar', label:'Downtime', data:[], backgroundColor:'red', barThickness:10, yAxisID:'y1'}  /* FIXED: Red bar overlay for down */
+                    {type:'bar', label:'Downtime', data:[], backgroundColor:'red', barThickness:10, yAxisID:'y1'}
                 ]},
                 options:{
                     responsive:true, 
@@ -92,7 +106,7 @@ function toggleGraph(ipDiv) {
                     animation:false, 
                     scales:{
                         y:{type:'linear', position:'left', title:{display:true,text:'Latency (ms)'}, min:0},
-                        y1:{type:'linear', position:'right', min:0, max:1, title:{display:true,text:'Status (0=Up,1=Down)'}, grid:{drawOnChartArea:false}}  /* FIXED: Secondary axis for bars */
+                        y1:{type:'linear', position:'right', min:0, max:1, title:{display:true,text:'Status (0=Up,1=Down)'}, grid:{drawOnChartArea:false}}
                     }
                 }
             });
@@ -108,8 +122,8 @@ function updateGraph(ipDiv) {
         const chart = charts[id];
         if (chart) {
             chart.data.labels = g.times.slice(-100);
-            chart.data.datasets[0].data = g.latency.slice(-100);  /* Line for latency */
-            chart.data.datasets[1].data = g.success.map(s => s ? 0 : 1).slice(-100);  /* Bar for down (1=down) */
+            chart.data.datasets[0].data = g.latency.slice(-100);
+            chart.data.datasets[1].data = g.success.map(s => s ? 0 : 1).slice(-100);
             chart.options.scales.y1.title.text = `Status - ${hours}h (0=Up,1=Down)`;
             chart.update('none');
         }
@@ -122,12 +136,11 @@ function pauseIP(event, ip_id) {
     if (isNaN(minutes) || minutes <= 0) {
         return;
     }
-    // Compute local now + minutes, convert to UTC ISO
     const localNow = new Date();
     const localEnd = new Date(localNow.getTime() + minutes * 60000);
-    const utcEnd = localEnd.toISOString();  // UTC ISO string
+    const utcEnd = localEnd.toISOString();
     const formData = new FormData();
-    formData.append('pause_until', utcEnd);  // Send absolute UTC end time
+    formData.append('pause_until', utcEnd);
     fetch(`/pause/${ip_id}`, {method:'POST', body: formData})
         .then(r => r.json())
         .then(() => {
@@ -150,47 +163,85 @@ function resumeIP(event, ip_id) {
             });
     }
 }
-function toggleNotif(event, ip_id) {
+
+function openConfig(ipDiv) {
     event.stopPropagation();
-    fetch(`/toggle_notif/${ip_id}`, {method:'POST'})
-        .then(r => r.json())
-        .then(data => {
-            if (data.status === 'ok') {
-                const enabled = data.enabled;
-                const btn = event.target;
-                btn.innerHTML = enabled ? '🔔 Notifs' : '🔕 No Notifs';
-                btn.className = enabled ? 'notif-btn' : 'notif-btn disabled';
-                alert(`Notifications ${enabled ? 'enabled' : 'disabled'} for this IP`);
-                location.reload();
-            } else {
-                alert('Error toggling notifications');
-            }
-        });
+    currentModalIpDiv = ipDiv;
+    const ip = ipDiv.dataset.ip;
+    const id = ipDiv.dataset.id;
+    document.getElementById('modalIP').textContent = ip;
+    const modal = document.getElementById('configModal');
+    modal.dataset.ipId = id;
+    const oldNotif = ipDiv.dataset.notifEnabled === 'true';
+    const oldQuiet = ipDiv.dataset.quietEnabled === 'true';
+    modal.dataset.oldNotif = oldNotif.toString();
+    modal.dataset.oldQuiet = oldQuiet.toString();
+    document.getElementById('modalNotif').checked = oldNotif;
+    document.getElementById('modalQuiet').checked = oldQuiet;
+    $('#configModal').show();
 }
-function toggleQuiet(event, ip_id) {
-    event.stopPropagation();
-    fetch(`/toggle_quiet/${ip_id}`, {method:'POST'})
-        .then(r => r.json())
-        .then(data => {
-            if (data.status === 'ok') {
-                const enabled = data.enabled;
-                const btn = event.target;
-                btn.innerHTML = enabled ? '🌙 Quiet' : '🌙 No Quiet';
-                btn.className = enabled ? 'quiet-btn disabled' : 'quiet-btn';
-                alert(`Quiet hours ${enabled ? 'enabled' : 'disabled'} for this IP`);
-                location.reload();
-            } else {
-                alert('Error toggling quiet hours');
-            }
-        });
+
+function closeModal() {
+    $('#configModal').hide();
+    currentModalIpDiv = null;
+}
+
+function saveConfig() {
+    const modal = document.getElementById('configModal');
+    const id = modal.dataset.ipId;
+    const newNotif = document.getElementById('modalNotif').checked;
+    const newQuiet = document.getElementById('modalQuiet').checked;
+    const oldNotif = modal.dataset.oldNotif === 'true';
+    const oldQuiet = modal.dataset.oldQuiet === 'true';
+
+    const promises = [];
+    if (newNotif !== oldNotif) {
+        promises.push(
+            fetch(`/toggle_notif/${id}`, {method: 'POST'})
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status === 'ok') {
+                        console.log('Notifications toggled');
+                        // Immediately update local dataset
+                        const ipDiv = document.querySelector(`[data-id="${id}"]`);
+                        if (ipDiv) {
+                            ipDiv.dataset.notifEnabled = newNotif.toString();
+                        }
+                    }
+                })
+        );
+    }
+    if (newQuiet !== oldQuiet) {
+        promises.push(
+            fetch(`/toggle_quiet/${id}`, {method: 'POST'})
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status === 'ok') {
+                        console.log('Quiet hours toggled');
+                        // Immediately update local dataset
+                        const ipDiv = document.querySelector(`[data-id="${id}"]`);
+                        if (ipDiv) {
+                            ipDiv.dataset.quietEnabled = newQuiet.toString();
+                        }
+                    }
+                })
+        );
+    }
+
+    Promise.all(promises).then(() => {
+        closeModal();
+        // Force immediate update to reflect changes in status
+        update();
+    }).catch(err => {
+        console.error('Error saving config:', err);
+        alert('Error saving configuration');
+    });
 }
 
 function update() {
     fetch('/live').then(r => r.json()).then(d => {
-        // Collect all IP divs
         const ipDivs = Array.from(document.querySelectorAll('.ip'));
         
-        // Sort divs by status (FAILED first, etc.)
         ipDivs.sort(function(a, b) {
             const aStatus = d[a.dataset.ip]?.status || 'UP';
             const bStatus = d[b.dataset.ip]?.status || 'UP';
@@ -199,20 +250,17 @@ function update() {
             const aFails = d[a.dataset.ip]?.consecutive_fails || 0;
             const bFails = d[b.dataset.ip]?.consecutive_fails || 0;
             
-            // FAILED (0), PAUSED (1), UP (2)
             let aKey = aStatus === 'FAILED' ? 0 : (aPaused ? 1 : 2);
             let bKey = bStatus === 'FAILED' ? 0 : (bPaused ? 1 : 2);
             
             if (aKey !== bKey) return aKey - bKey;
-            if (aKey === 0) return bFails - aFails;  // Most fails first for FAILED
-            return a.dataset.id - b.dataset.id;  // Stable by ID
+            if (aKey === 0) return bFails - aFails;
+            return a.dataset.id - b.dataset.id;
         });
         
-        // Re-append sorted divs to #list
         const list = document.getElementById('list');
         ipDivs.forEach(div => list.appendChild(div));
         
-        // Now update each div's content (original logic)
         ipDivs.forEach(ipDiv => {
             const ip = ipDiv.dataset.ip;
             const el = ipDiv.querySelector('.status');
@@ -220,12 +268,18 @@ function update() {
             
             const status = d[ip]?.status || 'UP';
             const paused = d[ip]?.paused || false;
-            const notifEnabled = d[ip]?.notif_enabled || true;
-            const quietEnabled = d[ip]?.quiet_enabled || false;
+            const notifEnabled = d[ip]?.notif_enabled || (ipDiv.dataset.notifEnabled === 'true');
+            const quietEnabled = d[ip]?.quiet_enabled || (ipDiv.dataset.quietEnabled === 'true');
             let displayStatus = status;
             let color = d[ip]?.color || 'green';
             const id = ipDiv.dataset.id;
             let statusHtml = '';
+            const notifExtra = !notifEnabled ? ' (no notifs)' : '';
+            const quietIcon = quietEnabled ? ' 🌙' : '';
+
+            // Update datasets for config modal
+            ipDiv.dataset.notifEnabled = notifEnabled.toString();
+            ipDiv.dataset.quietEnabled = quietEnabled.toString();
 
             if (paused) {
                 displayStatus = 'Paused';
@@ -247,7 +301,7 @@ function update() {
                 } else {
                     remaining = ' (indefinite)';
                 }
-                statusHtml = `<span style="color:${color}">Paused${remaining}</span>`;
+                statusHtml = `<span style="color:${color}">Paused${remaining}${notifExtra}${quietIcon}</span>`;
                 const pauseBtn = ipDiv.querySelector('.pause-btn');
                 pauseBtn.innerHTML = '▶️ Resume';
                 pauseBtn.onclick = function(e) { resumeIP(e, id); };
@@ -256,38 +310,15 @@ function update() {
                 if (status === 'FAILED' && d[ip].consecutive_fails > 0) {
                     extra = ` (${d[ip].consecutive_fails} fails)`;
                 }
-                let notifExtra = !notifEnabled ? ' (no notifs)' : '';
                 if (status === 'FAILED') {
-                    statusHtml = `<span style="color:${color}">${displayStatus}${extra}${notifExtra} @ ${d[ip].time}</span>`;
+                    statusHtml = `<span style="color:${color}">${displayStatus}${extra}${notifExtra}${quietIcon} @ ${d[ip].time}</span>`;
                 } else {
-                    statusHtml = `<span style="color:${color}">${displayStatus}${extra}${notifExtra}</span> ${d[ip].latency}ms @ ${d[ip].time}`;
+                    statusHtml = `<span style="color:${color}">${displayStatus}${extra}${notifExtra}${quietIcon}</span> ${d[ip].latency}ms @ ${d[ip].time}`;
                 }
                 const pauseBtn = ipDiv.querySelector('.pause-btn');
                 pauseBtn.innerHTML = '⏸️ Pause';
                 pauseBtn.onclick = function(e) { pauseIP(e, id); };
             }
-
-            // Update notif button
-            const notifBtn = ipDiv.querySelector('.notif-btn');
-            if (notifEnabled) {
-                notifBtn.innerHTML = '🔔 Notifs';
-                notifBtn.className = 'notif-btn';
-            } else {
-                notifBtn.innerHTML = '🔕 No Notifs';
-                notifBtn.className = 'notif-btn disabled';
-            }
-            notifBtn.onclick = function(e) { toggleNotif(e, id); };
-
-            // Update quiet button
-            const quietBtn = ipDiv.querySelector('.quiet-btn');
-            if (quietEnabled) {
-                quietBtn.innerHTML = '🌙 Quiet';
-                quietBtn.className = 'quiet-btn disabled';
-            } else {
-                quietBtn.innerHTML = '🌙 No Quiet';
-                quietBtn.className = 'quiet-btn';
-            }
-            quietBtn.onclick = function(e) { toggleQuiet(e, id); };
 
             el.innerHTML = statusHtml;
 
@@ -302,8 +333,9 @@ function update() {
             ipDiv.className = className;
         });
         
-        // Update extended graphs
         document.querySelectorAll('[data-extended="true"]').forEach(ipDiv => updateGraph(ipDiv));
+    }).catch(err => {
+        console.error('Error updating live data:', err);
     });
 }
 setInterval(update, 3000);
