@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>LIVE Ping Monitor</title>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {font-family:Arial; background:#f8f9fa; margin:0; padding:20px;}
+        .box {width:100%; max-width:100vw; margin:auto; background:white; padding:25px; border-radius:12px; box-shadow:0 4px 20px rgba(0,0,0,0.1);}
+        input, button {padding:12px; font-size:16px; border-radius:6px;}
+        button {background:#007bff; color:white; border:none; cursor:pointer;}
+        .ip {background:#fff; padding:15px; margin:15px 0; border:2px solid #e9ecef; border-radius:10px; cursor:pointer;}
+        .ip.failed {background: #f8d7da; border-color: #f5c6cb; color: #721c24;}
+        .ip.up {background: #d4edda; border-color: #c3e6cb; color: #155724;}
+        .ip.paused {background: #fff3cd; border-color: #ffeaa7; color: #856404;}
+        .ip h2 {margin:0;}
+        .description {font-style:italic; color:#666; margin-top:5px;}
+        .graph-container {display:none; margin-top:10px; width:100%; height:200px;}
+        canvas {height:100% !important; width:100% !important;}
+        .status {font-weight:bold; font-size:20px;}
+        select {padding:5px; margin-left:10px;}
+        .add-form {margin-bottom:20px;}
+        .add-form input[type="text"] {width:40%; margin-right:10px;}
+        .search-form {margin-bottom:20px;}
+        .search-form input {width:300px; padding:12px; font-size:16px; border-radius:6px; border:1px solid #ccc;}
+        .pause-btn, .notif-btn, .quiet-btn {background:#ffc107; color:#000; margin-left:10px; padding:5px 10px; border-radius:4px; cursor:pointer; font-size:14px;}
+        .pause-btn:hover, .notif-btn:hover, .quiet-btn:hover {background:#e0a800;}
+        .notif-btn.disabled, .quiet-btn.disabled {background:#6c757d; color:#fff;}
+        a {margin-left:10px;}
+    </style>
+</head>
+<body>
+<div class="box">
+    <h1>LIVE Ping Monitor</h1>
+    <a href="/config" style="float:right; color:#007bff;">⚙️ Config</a>
+    <form action="/add" method="post" class="add-form">
+        <input name="ip" placeholder="8.8.8.8" required>
+        <input name="description" placeholder="Description (optional)">
+        <button type="submit">Add IP</button>
+    </form>
+    <form method="get" class="search-form">
+        <input name="search" placeholder="Search IP or description..." value="{{ search or '' }}">
+        <button type="submit">Search</button>
+    </form>
+    <div id="list">
+        {% for ip in ips %}
+        <div class="ip" data-ip="{{ip.ip}}" data-id="{{ip.id}}" data-extended="false" data-status="up">
+            <h2 onclick="toggleGraph(this.parentNode)">
+                {{ip.ip}} <span class="status">Loading...</span>
+                <select onchange="updateGraph(this.parentNode.parentNode)" data-hours="1">
+                    <option value="1">1h</option>
+                    <option value="12">12h</option>
+                    <option value="24">24h</option>
+                    <option value="168">1w</option>
+                </select>
+                <button class="pause-btn">⏸️ Pause</button>
+                <button class="notif-btn">🔔 Notifs</button>
+                <button class="quiet-btn">🌙 No Quiet</button>
+            </h2>
+            {% if ip.description %}
+            <div class="description">{{ip.description}}</div>
+            {% endif %}
+            <div class="graph-container">
+                <canvas id="c{{ip.id}}"></canvas>
+            </div>
+            <a href="/stats/{{ip.id}}" style="color:#007bff;">Stats</a>
+            <a href="/del/{{ip.id}}" onclick="return confirm('Delete?')" style="color:red;">Delete</a>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<script>
+const charts = {};
+function toggleGraph(ipDiv) {
+    const extended = ipDiv.dataset.extended === 'true';
+    ipDiv.dataset.extended = (!extended).toString();
+    const graph = ipDiv.querySelector('.graph-container');
+    graph.style.display = extended ? 'none' : 'block';
+    if (!extended) {
+        const id = ipDiv.dataset.id;
+        if (!charts[id]) {
+            const canvas = graph.querySelector('canvas');
+            charts[id] = new Chart(canvas, {
+                data:{labels:[], datasets:[
+                    {type:'line', label:'Latency', data:[], borderColor:'limegreen', backgroundColor:'rgba(0,255,0,0.1)', fill:true, tension:0.3, yAxisID:'y'},
+                    {type:'bar', label:'Downtime', data:[], backgroundColor:'red', barThickness:10, yAxisID:'y1'}  /* FIXED: Red bar overlay for down */
+                ]},
+                options:{
+                    responsive:true, 
+                    maintainAspectRatio:false, 
+                    animation:false, 
+                    scales:{
+                        y:{type:'linear', position:'left', title:{display:true,text:'Latency (ms)'}, min:0},
+                        y1:{type:'linear', position:'right', min:0, max:1, title:{display:true,text:'Status (0=Up,1=Down)'}, grid:{drawOnChartArea:false}}  /* FIXED: Secondary axis for bars */
+                    }
+                }
+            });
+        }
+        updateGraph(ipDiv);
+    }
+}
+function updateGraph(ipDiv) {
+    const ip = ipDiv.dataset.ip;
+    const hours = ipDiv.querySelector('select').value;
+    fetch(`/graph/${ip}?hours=${hours}`).then(r=>r.json()).then(g => {
+        const id = ipDiv.dataset.id;
+        const chart = charts[id];
+        if (chart) {
+            chart.data.labels = g.times.slice(-100);
+            chart.data.datasets[0].data = g.latency.slice(-100);  /* Line for latency */
+            chart.data.datasets[1].data = g.success.map(s => s ? 0 : 1).slice(-100);  /* Bar for down (1=down) */
+            chart.options.scales.y1.title.text = `Status - ${hours}h (0=Up,1=Down)`;
+            chart.update('none');
+        }
+    });
+}
+function pauseIP(event, ip_id) {
+    event.stopPropagation();
+    const minutesStr = prompt("Pause for how many minutes from your local time?");
+    const minutes = parseInt(minutesStr);
+    if (isNaN(minutes) || minutes <= 0) {
+        return;
+    }
+    // Compute local now + minutes, convert to UTC ISO
+    const localNow = new Date();
+    const localEnd = new Date(localNow.getTime() + minutes * 60000);
+    const utcEnd = localEnd.toISOString();  // UTC ISO string
+    const formData = new FormData();
+    formData.append('pause_until', utcEnd);  // Send absolute UTC end time
+    fetch(`/pause/${ip_id}`, {method:'POST', body: formData})
+        .then(r => r.json())
+        .then(() => {
+            alert(`Paused until ${localEnd.toLocaleString()} (${minutes} min from local now)`);
+            location.reload();
+        });
+}
+function resumeIP(event, ip_id) {
+    event.stopPropagation();
+    if (confirm('Resume monitoring now?')) {
+        fetch(`/resume/${ip_id}`, {method:'POST'})
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'ok') {
+                    alert('Resumed monitoring');
+                    location.reload();
+                } else {
+                    alert('Error resuming');
+                }
+            });
+    }
+}
+function toggleNotif(event, ip_id) {
+    event.stopPropagation();
+    fetch(`/toggle_notif/${ip_id}`, {method:'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.status === 'ok') {
+                const enabled = data.enabled;
+                const btn = event.target;
+                btn.innerHTML = enabled ? '🔔 Notifs' : '🔕 No Notifs';
+                btn.className = enabled ? 'notif-btn' : 'notif-btn disabled';
+                alert(`Notifications ${enabled ? 'enabled' : 'disabled'} for this IP`);
+                location.reload();
+            } else {
+                alert('Error toggling notifications');
+            }
+        });
+}
+function toggleQuiet(event, ip_id) {
+    event.stopPropagation();
+    fetch(`/toggle_quiet/${ip_id}`, {method:'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.status === 'ok') {
+                const enabled = data.enabled;
+                const btn = event.target;
+                btn.innerHTML = enabled ? '🌙 Quiet' : '🌙 No Quiet';
+                btn.className = enabled ? 'quiet-btn disabled' : 'quiet-btn';
+                alert(`Quiet hours ${enabled ? 'enabled' : 'disabled'} for this IP`);
+                location.reload();
+            } else {
+                alert('Error toggling quiet hours');
+            }
+        });
+}
+
+function update() {
+    fetch('/live').then(r => r.json()).then(d => {
+        // Collect all IP divs
+        const ipDivs = Array.from(document.querySelectorAll('.ip'));
+        
+        // Sort divs by status (FAILED first, etc.)
+        ipDivs.sort(function(a, b) {
+            const aStatus = d[a.dataset.ip]?.status || 'UP';
+            const bStatus = d[b.dataset.ip]?.status || 'UP';
+            const aPaused = d[a.dataset.ip]?.paused || false;
+            const bPaused = d[b.dataset.ip]?.paused || false;
+            const aFails = d[a.dataset.ip]?.consecutive_fails || 0;
+            const bFails = d[b.dataset.ip]?.consecutive_fails || 0;
+            
+            // FAILED (0), PAUSED (1), UP (2)
+            let aKey = aStatus === 'FAILED' ? 0 : (aPaused ? 1 : 2);
+            let bKey = bStatus === 'FAILED' ? 0 : (bPaused ? 1 : 2);
+            
+            if (aKey !== bKey) return aKey - bKey;
+            if (aKey === 0) return bFails - aFails;  // Most fails first for FAILED
+            return a.dataset.id - b.dataset.id;  // Stable by ID
+        });
+        
+        // Re-append sorted divs to #list
+        const list = document.getElementById('list');
+        ipDivs.forEach(div => list.appendChild(div));
+        
+        // Now update each div's content (original logic)
+        ipDivs.forEach(ipDiv => {
+            const ip = ipDiv.dataset.ip;
+            const el = ipDiv.querySelector('.status');
+            if (!el) return;
+            
+            const status = d[ip]?.status || 'UP';
+            const paused = d[ip]?.paused || false;
+            const notifEnabled = d[ip]?.notif_enabled || true;
+            const quietEnabled = d[ip]?.quiet_enabled || false;
+            let displayStatus = status;
+            let color = d[ip]?.color || 'green';
+            const id = ipDiv.dataset.id;
+            let statusHtml = '';
+
+            if (paused) {
+                displayStatus = 'Paused';
+                color = 'orange';
+                let remaining = '';
+                const untilStr = d[ip]?.pause_until;
+                if (untilStr) {
+                    const until = new Date(untilStr);
+                    const now = new Date();
+                    const diffMs = until - now;
+                    const tzName = Intl.DateTimeFormat().resolvedOptions().timeZone;
+                    const localEnd = until.toLocaleString(undefined, { timeZone: tzName, hour12: false });
+                    if (diffMs > 0) {
+                        const mins = Math.ceil(diffMs / 60000);
+                        remaining = ` until ${localEnd} ${tzName} (${mins} min)`;
+                    } else {
+                        remaining = ` until ${localEnd} ${tzName} (expired)`;
+                    }
+                } else {
+                    remaining = ' (indefinite)';
+                }
+                statusHtml = `<span style="color:${color}">Paused${remaining}</span>`;
+                const pauseBtn = ipDiv.querySelector('.pause-btn');
+                pauseBtn.innerHTML = '▶️ Resume';
+                pauseBtn.onclick = function(e) { resumeIP(e, id); };
+            } else {
+                let extra = '';
+                if (status === 'FAILED' && d[ip].consecutive_fails > 0) {
+                    extra = ` (${d[ip].consecutive_fails} fails)`;
+                }
+                let notifExtra = !notifEnabled ? ' (no notifs)' : '';
+                if (status === 'FAILED') {
+                    statusHtml = `<span style="color:${color}">${displayStatus}${extra}${notifExtra} @ ${d[ip].time}</span>`;
+                } else {
+                    statusHtml = `<span style="color:${color}">${displayStatus}${extra}${notifExtra}</span> ${d[ip].latency}ms @ ${d[ip].time}`;
+                }
+                const pauseBtn = ipDiv.querySelector('.pause-btn');
+                pauseBtn.innerHTML = '⏸️ Pause';
+                pauseBtn.onclick = function(e) { pauseIP(e, id); };
+            }
+
+            // Update notif button
+            const notifBtn = ipDiv.querySelector('.notif-btn');
+            if (notifEnabled) {
+                notifBtn.innerHTML = '🔔 Notifs';
+                notifBtn.className = 'notif-btn';
+            } else {
+                notifBtn.innerHTML = '🔕 No Notifs';
+                notifBtn.className = 'notif-btn disabled';
+            }
+            notifBtn.onclick = function(e) { toggleNotif(e, id); };
+
+            // Update quiet button
+            const quietBtn = ipDiv.querySelector('.quiet-btn');
+            if (quietEnabled) {
+                quietBtn.innerHTML = '🌙 Quiet';
+                quietBtn.className = 'quiet-btn disabled';
+            } else {
+                quietBtn.innerHTML = '🌙 No Quiet';
+                quietBtn.className = 'quiet-btn';
+            }
+            quietBtn.onclick = function(e) { toggleQuiet(e, id); };
+
+            el.innerHTML = statusHtml;
+
+            let className = 'ip';
+            if (paused) {
+                className += ' paused';
+            } else if (status === 'FAILED') {
+                className += ' failed';
+            } else {
+                className += ' up';
+            }
+            ipDiv.className = className;
+        });
+        
+        // Update extended graphs
+        document.querySelectorAll('[data-extended="true"]').forEach(ipDiv => updateGraph(ipDiv));
+    });
+}
+setInterval(update, 3000);
+update();
+
+</script>
+</body>
+</html>

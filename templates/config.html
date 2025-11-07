@@ -1,0 +1,50 @@
+<!-- templates/config.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Config</title>
+    <style>
+        body {font-family:Arial; padding:20px;}
+        form {max-width:600px;}
+        input, textarea {width:100%; padding:10px; margin:5px 0;}
+        button {background:#007bff; color:white; padding:10px 20px; border:none; cursor:pointer;}
+        h3 {margin-top:20px;}
+        label {display:block; margin:5px 0;}
+        input[type="checkbox"] {width:auto;}
+    </style>
+</head>
+<body>
+    <h1>Notification Config</h1>
+    <a href="/">← Back</a>
+    <form method="post">
+        <h3>Email</h3>
+        <label><input name="email_enabled" type="checkbox" {% if config.email_enabled %}checked{% endif %}> Enable Email</label>
+        Host: <input name="email_host" value="{{config.email_host}}">
+        Port: <input name="email_port" value="{{config.email_port}}" type="number">
+        User (Sender): <input name="email_user" value="{{config.email_user}}">
+        Pass: <input name="email_pass" value="{{config.email_pass}}" type="password">
+        Recipient: <input name="email_recipient" value="{{config.email_recipient}}">
+        <label><input name="email_use_tls" type="checkbox" {% if config.email_use_tls %}checked{% endif %}> Use TLS (STARTTLS)</label>
+        <label><input name="email_use_ssl" type="checkbox" {% if config.email_use_ssl %}checked{% endif %}> Use SSL</label>
+        
+        <h3>Discord Webhook</h3>
+        <label><input name="discord_enabled" type="checkbox" {% if config.discord_enabled %}checked{% endif %}> Enable Discord</label>
+        URL: <input name="discord_webhook" value="{{config.discord_webhook}}">
+        
+        <h3>Custom Webhook</h3>
+        <label><input name="custom_webhook_enabled" type="checkbox" {% if config.custom_webhook_enabled %}checked{% endif %}> Enable Custom Webhook</label>
+        URL: <input name="custom_webhook_url" value="{{config.custom_webhook_url}}">
+        
+        <h3>Alert Threshold</h3>
+        Consecutive fails: <input name="alert_threshold" value="{{config.alert_threshold}}" type="number" min="1">
+        Resend every N fails: <input name="resend_every" value="{{config.resend_every}}" type="number" min="1">
+        
+        <h3>Quiet Hours (UTC)</h3>
+        Start hour (0-23): <input name="quiet_hours_start" value="{{config.quiet_hours_start}}" type="number" min="0" max="23">
+        End hour (0-23): <input name="quiet_hours_end" value="{{config.quiet_hours_end}}" type="number" min="0" max="23">
+        <small>Notifications skipped during this range for enabled IPs (wraps midnight).</small>
+        
+        <button type="submit">Save</button>
+    </form>
+</body>
+</html>
