@@ -94,6 +94,8 @@ with app.app_context():
 LIVE = {}
 lock = threading.Lock()
 scheduler = BackgroundScheduler()
+scheduler.configure(max_instances=2000)
+scheduler.configure(job_defaults={'max_instances': 200, 'misfire_grace_time': 30})
 scheduler.start()
 
 def normalize_to_utc(dt):
@@ -368,7 +370,7 @@ def start_pings():
             paused_until = normalize_to_utc(ip_obj.pause_until)
             if not ip_obj.blacklist and not (paused_until and paused_until > now):
                 job_id = f'ping_{ip_obj.id}'
-                scheduler.add_job(do_ping, 'interval', seconds=ip_obj.interval_seconds or 20, args=[ip_obj.id], id=job_id, replace_existing=True)
+                scheduler.add_job(do_ping, 'interval', seconds=ip_obj.interval_seconds or 20, args=[ip_obj.id], id=job_id, replace_existing=True, max_instances=2000)
                 set_paused_live(ip_obj)
                 logger.info(f"Started {ip_obj.monitor_type.upper()} ping job for {ip_obj.ip} (interval {ip_obj.interval_seconds}s)")
 
@@ -399,62 +401,71 @@ def index():
 
 @app.route('/add', methods=['POST'])
 def add():
-    ip = request.form['ip'].strip()
-    desc = request.form.get('description', '').strip()
-    monitor_type = request.form.get('monitor_type', 'icmp')
     with app.app_context():
-        if ip and not IPAddress.query.filter_by(ip=ip).first():
-            new_ip = IPAddress(
-                ip=ip, 
-                description=desc, 
-                notifications_enabled=True, 
-                last_alerted_fails=0,
-                monitor_type=monitor_type,
-                interval_seconds=20
-            )
-            if monitor_type == 'tcp':
-                port = request.form.get('port')
-                if not port:
-                    flash('Port is required for TCP monitoring.')
-                    return redirect('/')
-                new_ip.monitor_port = int(port)
-            elif monitor_type in ['http', 'https']:
-                url = request.form.get('url')
-                if not url:
-                    flash('URL is required for HTTP/HTTPS monitoring.')
-                    return redirect('/')
-                new_ip.monitor_url = url
-                new_ip.monitor_keyword = request.form.get('keyword', '')
-            db.session.add(new_ip)
-            db.session.commit()
-            interval = new_ip.interval_seconds or 20
-            job_id = f'ping_{new_ip.id}'
-            scheduler.add_job(do_ping, 'interval', seconds=interval, args=[new_ip.id],
-                             id=job_id, replace_existing=True)
-            do_ping(new_ip.id)
-            logger.info(f"ADDED {ip} ({desc}) → {monitor_type.upper()} started (notifs enabled)")
-        else:
-            flash(f"IP {ip} already exists or invalid.")
-            logger.warning(f"Add failed: IP {ip} already exists")
-    return redirect('/')
+        ip = request.form.get('ip', '').strip()
+        if not ip or IPAddress.query.filter_by(ip=ip).first():
+            flash('Invalid or duplicate IP.')
+            return redirect(url_for('index'))
+        
+        desc = request.form.get('description', '').strip() or None
+        monitor_type = request.form.get('monitor_type', 'icmp')
+        port = int(request.form.get('port', 0)) if monitor_type == 'tcp' else None
+        url = request.form.get('url', '') if monitor_type in ['http', 'https'] else None
+        keyword = request.form.get('keyword', '') or None
+        interval = int(request.form.get('interval', 20))
+        
+        if monitor_type == 'tcp' and not port:
+            flash('TCP requires port.')
+            return redirect(url_for('index'))
+        if monitor_type in ['http', 'https'] and not url:
+            flash('HTTP/HTTPS requires URL.')
+            return redirect(url_for('index'))
+        
+        new_ip = IPAddress(
+            ip=ip, description=desc, monitor_type=monitor_type,
+            monitor_port=port, monitor_url=url, monitor_keyword=keyword,
+            interval_seconds=interval, notifications_enabled=True
+        )
+        db.session.add(new_ip)
+        db.session.commit()
+        
+        job_id = f'ping_{new_ip.id}'
+        # Add job with defaults (from configure); no sync do_ping
+        scheduler.add_job(do_ping, 'interval', seconds=interval, args=[new_ip.id],
+                          id=job_id, replace_existing=True)
+        
+        # Init LIVE immediately as UNKNOWN/Loading
+        set_paused_live(new_ip)
+        logger.info(f"ADDED {ip} ({desc or 'no desc'}) → {monitor_type.upper()} (interval: {interval}s)")
+        flash(f'Added {ip}. First check in ~{interval}s.')
+        return redirect(url_for('index'))
 
 @app.route('/del/<int:ip_id>')
-def delete(ip_id):
+def delete_ip(ip_id):
     with app.app_context():
         ip_obj = db.session.get(IPAddress, ip_id)
         if not ip_obj:
-            logger.warning(f"Delete failed: IP ID {ip_id} not found")
-            return redirect('/')
+            return jsonify({'status': 'error'})
+        
+        ip = ip_obj.ip
+        # Stop and remove job
         try:
             scheduler.remove_job(f'ping_{ip_id}')
-            logger.info(f"Removed scheduler job for {ip_obj.ip}")
         except:
-            logger.warning(f"No scheduler job to remove for {ip_obj.ip}")
-        PingLog.query.filter_by(ip_id=ip_id).delete()
+            pass  # Job may not exist
+        
+        # Clear LIVE (under lock to avoid races)
+        with lock:
+            if ip in LIVE:
+                del LIVE[ip]
+        
+        # Delete from DB
         db.session.delete(ip_obj)
         db.session.commit()
-        logger.info(f"DELETED {ip_obj.ip}")
-    return redirect('/')
+        
+        logger.info(f"DELETED {ip}")
+        flash(f'DELETED {ip}')
+        return redirect(url_for('index'))
 
 @app.route('/stats/<int:ip_id>')
 def stats(ip_id):
@@ -529,19 +540,17 @@ def resume(ip_id):
     with app.app_context():
         ip_obj = db.session.get(IPAddress, ip_id)
         if not ip_obj:
-            logger.error(f"Resume failed: IP ID {ip_id} not found")
             return jsonify({'status': 'error'})
+        
         ip_obj.pause_until = None
         db.session.commit()
-        job_id = f'ping_{ip_id}'
+        
         interval = ip_obj.interval_seconds or 20
-        scheduler.add_job(do_ping, 'interval', seconds=interval, args=[ip_id], id=job_id, replace_existing=True)
-        do_ping(ip_id)
-        now_str = datetime.now(timezone.utc).strftime('%H:%M:%S')
-        with lock:
-            if ip_obj.ip in LIVE:
-                LIVE[ip_obj.ip]['paused'] = False
-                LIVE[ip_obj.ip]['pause_until'] = None
+        job_id = f'ping_{ip_id}'
+        scheduler.add_job(do_ping, 'interval', seconds=interval, args=[ip_id],
+                          id=job_id, replace_existing=True)
+        
+        set_paused_live(ip_obj)  # Re-init
         logger.info(f"RESUMED {ip_obj.ip}")
         return jsonify({'status': 'ok'})
 
@@ -589,7 +598,8 @@ def webhook():
             db.session.commit()
             interval = new_ip.interval_seconds or 20
             job_id = f'ping_{new_ip.id}'
-            scheduler.add_job(do_ping, 'interval', seconds=interval, args=[new_ip.id], id=job_id)
+            scheduler.add_job(do_ping, 'interval', seconds=interval, args=[new_ip.id], id=job_id,
+                              max_instances=2000, misfire_grace_time=30)
             do_ping(new_ip.id)
             logger.info(f"Webhook added {ip} ({desc}) → ping started")
         else:
@@ -622,7 +632,8 @@ def update_ip(ip_id):
             paused_until = normalize_to_utc(ip_obj.pause_until)
             if not (paused_until and paused_until > now) and not ip_obj.blacklist:
                 new_interval = ip_obj.interval_seconds or 20
-                scheduler.add_job(do_ping, 'interval', seconds=new_interval, args=[ip_id], id=f'ping_{ip_id}', replace_existing=True)
+                scheduler.add_job(do_ping, 'interval', seconds=new_interval, args=[ip_id], id=f'ping_{ip_id}', replace_existing=True,
+                                  max_instances=2000, misfire_grace_time=30)
                 do_ping(ip_id)
         set_paused_live(ip_obj)
         logger.info(f"Updated config for {ip_obj.ip}")
