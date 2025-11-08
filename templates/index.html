@@ -7,7 +7,7 @@
     <style>
         body {font-family:Arial; background:#f8f9fa; margin:0; padding:20px;}
         .box {width:100%; max-width:100vw; margin:auto; background:white; padding:25px; border-radius:12px; box-shadow:0 4px 20px rgba(0,0,0,0.1);}
-        input, button {padding:12px; font-size:16px; border-radius:6px;}
+        input, button, select {padding:12px; font-size:16px; border-radius:6px;}
         button {background:#007bff; color:white; border:none; cursor:pointer;}
         .ip {background:#fff; padding:15px; margin:15px 0; border:2px solid #e9ecef; border-radius:10px; cursor:pointer;}
         .ip.failed {background: #f8d7da; border-color: #f5c6cb; color: #721c24;}
@@ -20,26 +20,54 @@
         .status {font-weight:bold; font-size:20px;}
         select {padding:5px; margin-left:10px;}
         .add-form {margin-bottom:20px;}
-        .add-form input[type="text"] {width:40%; margin-right:10px;}
+        .add-form input[type="text"], .add-form input[type="url"], .add-form input[type="number"] {width:30%; margin-right:10px;}
+        .add-form select {width:20%; margin-right:10px;}
         .search-form {margin-bottom:20px;}
         .search-form input {width:300px; padding:12px; font-size:16px; border-radius:6px; border:1px solid #ccc;}
         .pause-btn, .config-btn {background:#ffc107; color:#000; margin-left:10px; padding:5px 10px; border-radius:4px; cursor:pointer; font-size:14px;}
         .pause-btn:hover, .config-btn:hover {background:#e0a800;}
         a {margin-left:10px;}
         #configModal {display:none; position:fixed; z-index:1000; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5);}
-        #configModal > div {background:white; margin:10% auto; padding:20px; width:300px; border-radius:8px;}
+        #configModal > div {background:white; margin:10% auto; padding:20px; width:400px; max-height:80vh; overflow-y:auto; border-radius:8px;}
         #configModal label {display:block; margin:10px 0;}
         #configModal input[type="checkbox"] {width:auto; margin-right:5px;}
+        #configModal input, #configModal select {width:100%; padding:5px; margin-top:2px;}
         #configModal button {margin:5px; padding:8px 16px;}
+        .field-group {margin-bottom:15px;}
+        small {color:#666; font-size:12px;}
+        .alert {padding:10px; background:#fff3cd; border:1px solid #ffeaa7; border-radius:5px; margin:10px 0; color:#856404;}
+        .tcp-fields, .http-fields {display:none; margin-top:10px; padding:10px; border:1px dashed #ccc;}
     </style>
 </head>
 <body>
 <div class="box">
     <h1>LIVE Ping Monitor</h1>
     <a href="/config" style="float:right; color:#007bff;">⚙️ Config</a>
+    
+    {% with messages = get_flashed_messages() %}
+        {% if messages %}
+            {% for message in messages %}
+                <div class="alert">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+    
     <form action="/add" method="post" class="add-form">
         <input name="ip" placeholder="8.8.8.8" required>
+        <select name="monitor_type" id="add-type">
+            <option value="icmp" selected>ICMP Ping</option>
+            <option value="tcp">TCP Port</option>
+            <option value="http">HTTP</option>
+            <option value="https">HTTPS</option>
+        </select>
         <input name="description" placeholder="Description (optional)">
+        <div class="tcp-fields">
+            <label>Port (required): <input type="number" name="port" min="1" max="65535" placeholder="e.g., 80"></label>
+        </div>
+        <div class="http-fields">
+            <label>URL (required): <input type="url" name="url" placeholder="e.g., http://example.com"></label>
+            <label>Keyword (optional): <input type="text" name="keyword" placeholder="Search for this in page content (case-insensitive)"></label>
+        </div>
         <button type="submit">Add IP</button>
     </form>
     <form method="get" class="search-form">
@@ -48,7 +76,7 @@
     </form>
     <div id="list">
         {% for ip in ips %}
-        <div class="ip" data-ip="{{ip.ip}}" data-id="{{ip.id}}" data-extended="false" data-status="up">
+        <div class="ip" data-ip="{{ip.ip}}" data-id="{{ip.id}}" data-extended="false" data-status="up" data-notifEnabled="true" data-quietEnabled="false" data-monitorType="icmp" data-port="" data-url="" data-keyword="" data-interval="20" data-threshold="" data-resendEvery="" data-quietStart="" data-quietEnd="">
             <h2 onclick="toggleGraph(this.parentNode)">
                 {{ip.ip}} <span class="status">Loading...</span>
                 <select onchange="updateGraph(this.parentNode.parentNode)" data-hours="1">
@@ -57,8 +85,8 @@
                     <option value="24">24h</option>
                     <option value="168">1w</option>
                 </select>
-                <button class="pause-btn">⏸️ Pause</button>
-                <button class="config-btn" onclick="openConfig(this.parentNode.parentNode); event.stopPropagation();">⚙️ Config</button>
+                <button class="pause-btn" onclick="pauseIP(event, {{ip.id}})">⏸️ Pause</button>
+                <button class="config-btn" onclick="openConfig(event, this.parentNode.parentNode)">⚙️ Config</button>
             </h2>
             {% if ip.description %}
             <div class="description">{{ip.description}}</div>
@@ -76,8 +104,40 @@
 <div id="configModal">
     <div>
         <h3>Configure <span id="modalIP"></span></h3>
-        <label><input type="checkbox" id="modalNotif"> Enable Notifications</label>
-        <label><input type="checkbox" id="modalQuiet"> Enable Quiet Hours</label>
+        <div class="field-group">
+            <label><input type="checkbox" id="modalNotif"> Enable Notifications</label>
+        </div>
+        <div class="field-group">
+            <label><input type="checkbox" id="modalQuiet"> Enable Quiet Hours</label>
+            <div id="quietFields" style="display:none;">
+                <label>Quiet Start (0-23, empty=global): <input id="modalQuietStart" type="number" min="0" max="23"><small> Global: <span id="globalQuietStart"></small></label>
+                <label>Quiet End (0-23, empty=global): <input id="modalQuietEnd" type="number" min="0" max="23"><small> Global: <span id="globalQuietEnd"></small></label>
+            </div>
+        </div>
+        <div class="field-group">
+            <label>Monitor Type: <select id="modalType">
+                <option value="icmp">ICMP Ping</option>
+                <option value="tcp">TCP Port</option>
+                <option value="http">HTTP</option>
+                <option value="https">HTTPS</option>
+            </select></label>
+            <div id="tcpFields" style="display:none;">
+                <label>Port (required): <input id="modalPort" type="number" min="1" max="65535"></label>
+            </div>
+            <div id="httpFields" style="display:none;">
+                <label>URL (required): <input id="modalUrl"></label>
+                <label>Keyword (optional): <input id="modalKeyword"></label>
+            </div>
+        </div>
+        <div class="field-group">
+            <label>Interval (seconds, min 5): <input id="modalInterval" type="number" min="5" value="20"></label>
+        </div>
+        <div class="field-group">
+            <label>Alert Threshold (empty=global): <input id="modalThreshold" type="number" min="1"><small> Global: <span id="globalThreshold"></span></small></label>
+        </div>
+        <div class="field-group">
+            <label>Resend every N fails (empty=global): <input id="modalResend" type="number" min="1"><small> Global: <span id="globalResend"></small></label>
+        </div>
         <button onclick="saveConfig()">Save</button>
         <button onclick="closeModal()">Close</button>
     </div>
@@ -86,6 +146,17 @@
 <script>
 const charts = {};
 let currentModalIpDiv = null;
+let LIVE = {};  // Global LIVE data from /live
+let globalConfig = {alert_threshold: 2, resend_every: 20, quiet_hours_start: 22, quiet_hours_end: 6};
+fetch('/config_json').then(r => r.json()).then(c => { globalConfig = c; updateGlobalDisplays(); }).catch(() => {});
+
+function updateGlobalDisplays() {
+    document.getElementById('globalThreshold').textContent = globalConfig.alert_threshold;
+    document.getElementById('globalResend').textContent = globalConfig.resend_every;  // Global resend_every display
+    document.getElementById('globalQuietStart').textContent = globalConfig.quiet_hours_start;
+    document.getElementById('globalQuietEnd').textContent = globalConfig.quiet_hours_end;
+}
+
 function toggleGraph(ipDiv) {
     const extended = ipDiv.dataset.extended === 'true';
     ipDiv.dataset.extended = (!extended).toString();
@@ -96,152 +167,232 @@ function toggleGraph(ipDiv) {
         if (!charts[id]) {
             const canvas = graph.querySelector('canvas');
             charts[id] = new Chart(canvas, {
-                data:{labels:[], datasets:[
-                    {type:'line', label:'Latency', data:[], borderColor:'limegreen', backgroundColor:'rgba(0,255,0,0.1)', fill:true, tension:0.3, yAxisID:'y'},
-                    {type:'bar', label:'Downtime', data:[], backgroundColor:'red', barThickness:10, yAxisID:'y1'}
+                data: {labels: [], datasets: [
+                    {type: 'line', label: 'Latency', data: [], borderColor: 'limegreen', backgroundColor: 'rgba(0,255,0,0.1)', fill: true, tension: 0.3, yAxisID: 'y'},
+                    {type: 'bar', label: 'Downtime', data: [], backgroundColor: 'red', barThickness: 10, yAxisID: 'y1'}
                 ]},
-                options:{
-                    responsive:true, 
-                    maintainAspectRatio:false, 
-                    animation:false, 
-                    scales:{
-                        y:{type:'linear', position:'left', title:{display:true,text:'Latency (ms)'}, min:0},
-                        y1:{type:'linear', position:'right', min:0, max:1, title:{display:true,text:'Status (0=Up,1=Down)'}, grid:{drawOnChartArea:false}}
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    scales: {
+                        y: {type: 'linear', display: true, position: 'left'},
+                        y1: {type: 'linear', display: false, position: 'right', grid: {drawOnChartArea: false}}
                     }
                 }
             });
+            updateGraph(ipDiv);
         }
-        updateGraph(ipDiv);
-    }
-}
-function updateGraph(ipDiv) {
-    const ip = ipDiv.dataset.ip;
-    const hours = ipDiv.querySelector('select').value;
-    fetch(`/graph/${ip}?hours=${hours}`).then(r=>r.json()).then(g => {
-        const id = ipDiv.dataset.id;
-        const chart = charts[id];
-        if (chart) {
-            chart.data.labels = g.times.slice(-100);
-            chart.data.datasets[0].data = g.latency.slice(-100);
-            chart.data.datasets[1].data = g.success.map(s => s ? 0 : 1).slice(-100);
-            chart.options.scales.y1.title.text = `Status - ${hours}h (0=Up,1=Down)`;
-            chart.update('none');
-        }
-    });
-}
-function pauseIP(event, ip_id) {
-    event.stopPropagation();
-    const minutesStr = prompt("Pause for how many minutes from your local time?");
-    const minutes = parseInt(minutesStr);
-    if (isNaN(minutes) || minutes <= 0) {
-        return;
-    }
-    const localNow = new Date();
-    const localEnd = new Date(localNow.getTime() + minutes * 60000);
-    const utcEnd = localEnd.toISOString();
-    const formData = new FormData();
-    formData.append('pause_until', utcEnd);
-    fetch(`/pause/${ip_id}`, {method:'POST', body: formData})
-        .then(r => r.json())
-        .then(() => {
-            alert(`Paused until ${localEnd.toLocaleString()} (${minutes} min from local now)`);
-            location.reload();
-        });
-}
-function resumeIP(event, ip_id) {
-    event.stopPropagation();
-    if (confirm('Resume monitoring now?')) {
-        fetch(`/resume/${ip_id}`, {method:'POST'})
-            .then(r => r.json())
-            .then(data => {
-                if (data.status === 'ok') {
-                    alert('Resumed monitoring');
-                    location.reload();
-                } else {
-                    alert('Error resuming');
-                }
-            });
     }
 }
 
-function openConfig(ipDiv) {
-    event.stopPropagation();
+function updateGraph(ipDiv) {
+    const id = ipDiv.dataset.id;
+    const chart = charts[id];
+    if (!chart) return;
+    const hours = ipDiv.querySelector('select[data-hours]').value;
+    const ip = ipDiv.dataset.ip;
+    fetch(`/graph/${ip}?hours=${hours}`).then(r => r.json()).then(data => {
+        chart.data.labels = data.times;
+        chart.data.datasets[0].data = data.latency;
+        chart.data.datasets[1].data = data.success.map(s => s ? null : 1);
+        chart.update('none');
+    });
+}
+
+function openConfig(e, ipDiv) {
+    e.preventDefault();
+    e.stopPropagation();
     currentModalIpDiv = ipDiv;
     const ip = ipDiv.dataset.ip;
-    const id = ipDiv.dataset.id;
     document.getElementById('modalIP').textContent = ip;
-    const modal = document.getElementById('configModal');
-    modal.dataset.ipId = id;
-    const oldNotif = ipDiv.dataset.notifEnabled === 'true';
-    const oldQuiet = ipDiv.dataset.quietEnabled === 'true';
-    modal.dataset.oldNotif = oldNotif.toString();
-    modal.dataset.oldQuiet = oldQuiet.toString();
-    document.getElementById('modalNotif').checked = oldNotif;
-    document.getElementById('modalQuiet').checked = oldQuiet;
-    $('#configModal').show();
+    // Use LIVE snake_case bools primarily, fallback to dataset camelCase strings
+    const data = ipDiv.dataset;
+    const liveData = LIVE[ip] || {};
+    // Notifications
+    const notifEnabled = liveData.notif_enabled !== false;  // bool from LIVE
+    document.getElementById('modalNotif').checked = notifEnabled;
+    // Quiet
+    const quietEnabled = liveData.quiet_enabled === true;  // bool from LIVE
+    document.getElementById('modalQuiet').checked = quietEnabled;
+    // Type
+    const monitorType = liveData.monitor_type || data.monitorType || 'icmp';
+    document.getElementById('modalType').value = monitorType;
+    // Port
+    document.getElementById('modalPort').value = liveData.monitor_port?.toString() || data.port || '';
+    // URL
+    document.getElementById('modalUrl').value = liveData.monitor_url || data.url || '';
+    // Keyword
+    document.getElementById('modalKeyword').value = liveData.monitor_keyword || data.keyword || '';
+    // Interval
+    document.getElementById('modalInterval').value = liveData.interval || data.interval || 20;
+    // Threshold
+    document.getElementById('modalThreshold').value = liveData.alert_threshold?.toString() || data.threshold || '';
+    // Resend every
+    document.getElementById('modalResend').value = liveData.resend_every?.toString() || data.resendEvery || '';
+    // Quiet start/end
+    document.getElementById('modalQuietStart').value = liveData.quiet_start?.toString() || data.quietStart || '';
+    document.getElementById('modalQuietEnd').value = liveData.quiet_end?.toString() || data.quietEnd || '';
+    // Toggle fields
+    toggleFields(monitorType);
+    // Quiet fields
+    document.getElementById('quietFields').style.display = quietEnabled ? 'block' : 'none';
+    // Open modal
+    document.getElementById('configModal').style.display = 'block';
+}
+
+function toggleFields(type) {
+    document.getElementById('tcpFields').style.display = type === 'tcp' ? 'block' : 'none';
+    document.getElementById('httpFields').style.display = (type === 'http' || type === 'https') ? 'block' : 'none';
 }
 
 function closeModal() {
-    $('#configModal').hide();
-    currentModalIpDiv = null;
+    document.getElementById('configModal').style.display = 'none';
 }
 
 function saveConfig() {
-    const modal = document.getElementById('configModal');
-    const id = modal.dataset.ipId;
-    const newNotif = document.getElementById('modalNotif').checked;
-    const newQuiet = document.getElementById('modalQuiet').checked;
-    const oldNotif = modal.dataset.oldNotif === 'true';
-    const oldQuiet = modal.dataset.oldQuiet === 'true';
-
-    const promises = [];
-    if (newNotif !== oldNotif) {
-        promises.push(
-            fetch(`/toggle_notif/${id}`, {method: 'POST'})
-                .then(r => r.json())
-                .then(data => {
-                    if (data.status === 'ok') {
-                        console.log('Notifications toggled');
-                        // Immediately update local dataset
-                        const ipDiv = document.querySelector(`[data-id="${id}"]`);
-                        if (ipDiv) {
-                            ipDiv.dataset.notifEnabled = newNotif.toString();
-                        }
-                    }
-                })
-        );
+    if (!currentModalIpDiv) return;
+    const id = currentModalIpDiv.dataset.id;
+    const modalType = document.getElementById('modalType').value;
+    const quietEn = document.getElementById('modalQuiet').checked;
+    let data = {
+        notifications_enabled: document.getElementById('modalNotif').checked,
+        quiet_hours_enabled: quietEn,
+        monitor_type: modalType,
+        interval_seconds: parseInt(document.getElementById('modalInterval').value) || 20,
+        alert_threshold: document.getElementById('modalThreshold').value ? parseInt(document.getElementById('modalThreshold').value) : null,
+        resend_every: document.getElementById('modalResend').value ? parseInt(document.getElementById('modalResend').value) : null
+    };
+    if (modalType === 'tcp') {
+        const port = document.getElementById('modalPort').value;
+        if (!port) { alert('Port required for TCP'); return; }
+        data.monitor_port = parseInt(port);
+        data.monitor_url = null;
+        data.monitor_keyword = null;
+    } else if (modalType === 'http' || modalType === 'https') {
+        const url = document.getElementById('modalUrl').value;
+        if (!url) { alert('URL required for HTTP/HTTPS'); return; }
+        data.monitor_port = null;
+        data.monitor_url = url;
+        data.monitor_keyword = document.getElementById('modalKeyword').value || null;
+    } else {
+        data.monitor_port = null;
+        data.monitor_url = null;
+        data.monitor_keyword = null;
     }
-    if (newQuiet !== oldQuiet) {
-        promises.push(
-            fetch(`/toggle_quiet/${id}`, {method: 'POST'})
-                .then(r => r.json())
-                .then(data => {
-                    if (data.status === 'ok') {
-                        console.log('Quiet hours toggled');
-                        // Immediately update local dataset
-                        const ipDiv = document.querySelector(`[data-id="${id}"]`);
-                        if (ipDiv) {
-                            ipDiv.dataset.quietEnabled = newQuiet.toString();
-                        }
-                    }
-                })
-        );
+    if (quietEn) {
+        data.quiet_start = document.getElementById('modalQuietStart').value ? parseInt(document.getElementById('modalQuietStart').value) : null;
+        data.quiet_end = document.getElementById('modalQuietEnd').value ? parseInt(document.getElementById('modalQuietEnd').value) : null;
+    } else {
+        data.quiet_start = null;
+        data.quiet_end = null;
     }
-
-    Promise.all(promises).then(() => {
-        closeModal();
-        // Force immediate update to reflect changes in status
-        update();
+    fetch(`/update_ip/${id}`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data)
+    }).then(r => r.json()).then(res => {
+        if (res.status === 'ok') {
+            // Update dataset
+            currentModalIpDiv.dataset.notifEnabled = data.notifications_enabled.toString();
+            currentModalIpDiv.dataset.quietEnabled = data.quiet_hours_enabled.toString();
+            currentModalIpDiv.dataset.monitorType = data.monitor_type;
+            currentModalIpDiv.dataset.port = data.monitor_port ? data.monitor_port.toString() : '';
+            currentModalIpDiv.dataset.url = data.monitor_url || '';
+            currentModalIpDiv.dataset.keyword = data.monitor_keyword || '';
+            currentModalIpDiv.dataset.interval = data.interval_seconds.toString();
+            currentModalIpDiv.dataset.threshold = data.alert_threshold ? data.alert_threshold.toString() : '';
+            currentModalIpDiv.dataset.resendEvery = data.resend_every ? data.resend_every.toString() : '';
+            currentModalIpDiv.dataset.quietStart = data.quiet_start ? data.quiet_start.toString() : '';
+            currentModalIpDiv.dataset.quietEnd = data.quiet_end ? data.quiet_end.toString() : '';
+            closeModal();
+            update();
+        } else {
+            alert('Error saving config');
+        }
     }).catch(err => {
-        console.error('Error saving config:', err);
+        console.error('Save error:', err);
         alert('Error saving configuration');
     });
 }
 
+function pauseIP(e, id) {
+    e.preventDefault();
+    e.stopPropagation();
+    const until = new Date(Date.now() + 30 * 60000).toISOString();  // 30 min example
+    let formData = new FormData();
+    formData.append('pause_until', until);
+    fetch(`/pause/${id}`, {
+        method: 'POST',
+        body: formData
+    }).then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+    }).then(res => {
+        if (res.status === 'ok') {
+            console.log('Paused IP', id);
+            update();
+        } else {
+            alert('Pause failed: ' + (res.message || 'Unknown error'));
+        }
+    }).catch(err => {
+        console.error('Pause error:', err);
+        alert('Pause failed: ' + err.message);
+    });
+}
+
+function resumeIP(e, id) {
+    e.preventDefault();
+    e.stopPropagation();
+    fetch(`/resume/${id}`, {method: 'POST'}).then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+    }).then(res => {
+        if (res.status === 'ok') {
+            console.log('Resumed IP', id);
+            update();
+        } else {
+            alert('Resume failed: ' + (res.message || 'Unknown error'));
+        }
+    }).catch(err => {
+        console.error('Resume error:', err);
+        alert('Resume failed: ' + err.message);
+    });
+}
+
+document.getElementById('modalType').onchange = function() { toggleFields(this.value); };
+document.getElementById('modalQuiet').onchange = function() {
+    document.getElementById('quietFields').style.display = this.checked ? 'block' : 'none';
+};
+
+// Add form conditional fields
+document.getElementById('add-type').addEventListener('change', function() {
+    const tcpFields = document.querySelector('.tcp-fields');
+    const httpFields = document.querySelector('.http-fields');
+    const urlInput = document.querySelector('input[name="url"]');
+    const portInput = document.querySelector('input[name="port"]');
+    if (this.value === 'tcp') {
+        tcpFields.style.display = 'block';
+        httpFields.style.display = 'none';
+        urlInput.required = false;
+        portInput.required = true;
+    } else if (this.value === 'http' || this.value === 'https') {
+        tcpFields.style.display = 'none';
+        httpFields.style.display = 'block';
+        urlInput.required = true;
+        portInput.required = false;
+    } else {
+        tcpFields.style.display = 'none';
+        httpFields.style.display = 'none';
+        urlInput.required = false;
+        portInput.required = false;
+    }
+});
+
 function update() {
     fetch('/live').then(r => r.json()).then(d => {
+        LIVE = d;  // Update global LIVE
         const ipDivs = Array.from(document.querySelectorAll('.ip'));
-        
         ipDivs.sort(function(a, b) {
             const aStatus = d[a.dataset.ip]?.status || 'UP';
             const bStatus = d[b.dataset.ip]?.status || 'UP';
@@ -249,43 +400,53 @@ function update() {
             const bPaused = d[b.dataset.ip]?.paused || false;
             const aFails = d[a.dataset.ip]?.consecutive_fails || 0;
             const bFails = d[b.dataset.ip]?.consecutive_fails || 0;
-            
             let aKey = aStatus === 'FAILED' ? 0 : (aPaused ? 1 : 2);
             let bKey = bStatus === 'FAILED' ? 0 : (bPaused ? 1 : 2);
-            
             if (aKey !== bKey) return aKey - bKey;
             if (aKey === 0) return bFails - aFails;
-            return a.dataset.id - b.dataset.id;
+            return parseInt(a.dataset.id) - parseInt(b.dataset.id);
         });
-        
         const list = document.getElementById('list');
         ipDivs.forEach(div => list.appendChild(div));
-        
         ipDivs.forEach(ipDiv => {
             const ip = ipDiv.dataset.ip;
             const el = ipDiv.querySelector('.status');
             if (!el) return;
-            
-            const status = d[ip]?.status || 'UP';
-            const paused = d[ip]?.paused || false;
-            const notifEnabled = d[ip]?.notif_enabled || (ipDiv.dataset.notifEnabled === 'true');
-            const quietEnabled = d[ip]?.quiet_enabled || (ipDiv.dataset.quietEnabled === 'true');
+            const statusData = d[ip] || {};
+            const status = statusData.status || 'UP';
+            const paused = statusData.paused || false;
+            const notifEnabled = statusData.notif_enabled ?? true;
+            const quietEnabled = statusData.quiet_enabled ?? false;
             let displayStatus = status;
-            let color = d[ip]?.color || 'green';
+            
+            // FIXED: Status-based color (no graph impact)
+            let color = 'green';
+            if (status === 'FAILED') color = 'red';
+            else if (paused) color = 'orange';
+            
             const id = ipDiv.dataset.id;
             let statusHtml = '';
             const notifExtra = !notifEnabled ? ' (no notifs)' : '';
             const quietIcon = quietEnabled ? ' 🌙' : '';
-
-            // Update datasets for config modal
+            const desc = statusData.desc ? ` (${statusData.desc})` : '';
+            // Update datasets from LIVE (camelCase for consistency)
             ipDiv.dataset.notifEnabled = notifEnabled.toString();
             ipDiv.dataset.quietEnabled = quietEnabled.toString();
-
+            ipDiv.dataset.monitorType = statusData.monitor_type || 'icmp';
+            ipDiv.dataset.port = statusData.monitor_port?.toString() || '';
+            ipDiv.dataset.url = statusData.monitor_url || '';
+            ipDiv.dataset.keyword = statusData.monitor_keyword || '';
+            ipDiv.dataset.interval = (statusData.interval || 20).toString();
+            ipDiv.dataset.threshold = statusData.alert_threshold?.toString() || '';
+            ipDiv.dataset.resendEvery = statusData.resend_every?.toString() || '';
+            ipDiv.dataset.quietStart = statusData.quiet_start?.toString() || '';
+            ipDiv.dataset.quietEnd = statusData.quiet_end?.toString() || '';
+            // Dynamic onclick for pause/resume
+            const pauseBtn = ipDiv.querySelector('.pause-btn');
             if (paused) {
                 displayStatus = 'Paused';
-                color = 'orange';
                 let remaining = '';
-                const untilStr = d[ip]?.pause_until;
+                const untilStr = statusData.pause_until;
                 if (untilStr) {
                     const until = new Date(untilStr);
                     const now = new Date();
@@ -294,34 +455,30 @@ function update() {
                     const localEnd = until.toLocaleString(undefined, { timeZone: tzName, hour12: false });
                     if (diffMs > 0) {
                         const mins = Math.ceil(diffMs / 60000);
-                        remaining = ` until ${localEnd} ${tzName} (${mins} min)`;
+                        remaining = ` until ${localEnd} (${tzName}) (${mins} min)`;
                     } else {
-                        remaining = ` until ${localEnd} ${tzName} (expired)`;
+                        remaining = ` until ${localEnd} (${tzName}) (expired)`;
                     }
                 } else {
                     remaining = ' (indefinite)';
                 }
-                statusHtml = `<span style="color:${color}">Paused${remaining}${notifExtra}${quietIcon}</span>`;
-                const pauseBtn = ipDiv.querySelector('.pause-btn');
+                statusHtml = `<span style="color:${color}">Paused${remaining}</span>`;
                 pauseBtn.innerHTML = '▶️ Resume';
                 pauseBtn.onclick = function(e) { resumeIP(e, id); };
             } else {
                 let extra = '';
-                if (status === 'FAILED' && d[ip].consecutive_fails > 0) {
-                    extra = ` (${d[ip].consecutive_fails} fails)`;
+                if (status === 'FAILED' && statusData.consecutive_fails > 0) {
+                    extra = ` (${statusData.consecutive_fails} fails)`;
                 }
                 if (status === 'FAILED') {
-                    statusHtml = `<span style="color:${color}">${displayStatus}${extra}${notifExtra}${quietIcon} @ ${d[ip].time}</span>`;
+                    statusHtml = `<span style="color:${color}">${displayStatus}${extra}${desc}${notifExtra}${quietIcon} @ ${statusData.time}</span>`;
                 } else {
-                    statusHtml = `<span style="color:${color}">${displayStatus}${extra}${notifExtra}${quietIcon}</span> ${d[ip].latency}ms @ ${d[ip].time}`;
+                    statusHtml = `<span style="color:${color}">${displayStatus}${extra}${notifExtra}${quietIcon}</span> ${statusData.latency}ms @ ${statusData.time}`;
                 }
-                const pauseBtn = ipDiv.querySelector('.pause-btn');
                 pauseBtn.innerHTML = '⏸️ Pause';
                 pauseBtn.onclick = function(e) { pauseIP(e, id); };
             }
-
             el.innerHTML = statusHtml;
-
             let className = 'ip';
             if (paused) {
                 className += ' paused';
@@ -332,7 +489,6 @@ function update() {
             }
             ipDiv.className = className;
         });
-        
         document.querySelectorAll('[data-extended="true"]').forEach(ipDiv => updateGraph(ipDiv));
     }).catch(err => {
         console.error('Error updating live data:', err);
@@ -340,7 +496,6 @@ function update() {
 }
 setInterval(update, 3000);
 update();
-
 </script>
 </body>
 </html>

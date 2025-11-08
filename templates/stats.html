@@ -8,26 +8,43 @@
         h2 {color:#333;}
         img {max-width:100%; height:auto; border:1px solid #ddd; border-radius:8px;}
         a {color:#007bff; text-decoration:none;}
+        .down-icon {color:red; font-size:24px; margin-left:5px;}
+        .uptime {font-weight:bold;}
+        .uptime.good {color:green;}
+        .uptime.bad {color:red;}
     </style>
 </head>
 <body>
     <h1>Stats for {{ ip.ip }}</h1>
     <a href="/">← Back</a>
     {% if ip.description %}<p><em>{{ ip.description }}</em></p>{% endif %}
+    
     <h2>1-Day Stats</h2>
-    <p>Uptime: {{ stats_1d.uptime }}% | Avg Latency: {{ stats_1d.avg_latency }} ms</p>
+    <p>
+        Uptime: <span class="uptime {% if stats_1d.uptime < 100 %}bad{% else %}good{% endif %}">{{ stats_1d.uptime }}%</span>
+        {% if stats_1d.uptime < 100 %}<span class="down-icon">✗</span>{% endif %}
+        | Avg Latency: {{ stats_1d.avg_latency }} ms
+    </p>
     {% if stats_1d.graph %}
     <img src="data:image/png;base64,{{ stats_1d.graph }}" alt="1-day graph">
     {% endif %}
 
     <h2>7-Day Stats</h2>
-    <p>Uptime: {{ stats_7d.uptime }}% | Avg Latency: {{ stats_7d.avg_latency }} ms</p>
+    <p>
+        Uptime: <span class="uptime {% if stats_7d.uptime < 100 %}bad{% else %}good{% endif %}">{{ stats_7d.uptime }}%</span>
+        {% if stats_7d.uptime < 100 %}<span class="down-icon">✗</span>{% endif %}
+        | Avg Latency: {{ stats_7d.avg_latency }} ms
+    </p>
     {% if stats_7d.graph %}
     <img src="data:image/png;base64,{{ stats_7d.graph }}" alt="7-day graph">
     {% endif %}
 
     <h2>30-Day Stats</h2>
-    <p>Uptime: {{ stats_30d.uptime }}% | Avg Latency: {{ stats_30d.avg_latency }} ms</p>
+    <p>
+        Uptime: <span class="uptime {% if stats_30d.uptime < 100 %}bad{% else %}good{% endif %}">{{ stats_30d.uptime }}%</span>
+        {% if stats_30d.uptime < 100 %}<span class="down-icon">✗</span>{% endif %}
+        | Avg Latency: {{ stats_30d.avg_latency }} ms
+    </p>
     {% if stats_30d.graph %}
     <img src="data:image/png;base64,{{ stats_30d.graph }}" alt="30-day graph">
     {% endif %}
